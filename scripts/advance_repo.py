@@ -226,6 +226,20 @@ def build_prompt(entry: dict, files: dict[str, str], research: list[dict]) -> st
     )
 
 
+def sanitize_log(old_log: str, model_log: str, today: str) -> str:
+    """Rebuild the log deterministically instead of trusting the model to
+    reproduce prior lines unchanged and not invent new ones: keep the real
+    old_log verbatim, and append ONLY genuinely-new lines dated today. A
+    70B model still fabricated a fake prior entry in testing despite being
+    told explicitly not to — prompting alone isn't reliable enough here."""
+    old_lines = set(old_log.splitlines())
+    new_dated_lines = [line for line in model_log.splitlines()
+                      if line.strip() and line not in old_lines and today in line]
+    if not new_dated_lines:
+        return old_log  # model didn't produce a valid dated line — caller falls back
+    return (old_log.rstrip("\n") + "\n" if old_log.strip() else "") + "\n".join(new_dated_lines)
+
+
 def commit_summary(old_log: str, new_log: str) -> str:
     old_lines = set(old_log.splitlines())
     for line in new_log.splitlines():
@@ -319,11 +333,15 @@ def main() -> None:
         print(raw[:1000], file=sys.stderr)
         sys.exit(1)
 
-    new_log = edited.get(ADVANCEMENT_LOG)
-    if not new_log:
-        new_log = (old_log + f"\n- {date.today().isoformat()}: "
-                  f"advancement pass {pass_num} (see commit for details)")
-        edited[ADVANCEMENT_LOG] = new_log
+    today = date.today().isoformat()
+    model_log = edited.get(ADVANCEMENT_LOG, "")
+    new_log = sanitize_log(old_log, model_log, today) if model_log else old_log
+    if new_log == old_log:
+        # model gave no usable dated line — fall back to a generic one so
+        # the log still records that a pass happened
+        new_log = (old_log.rstrip("\n") + "\n" if old_log.strip() else "") + \
+                 f"- {today}: advancement pass {pass_num} (see commit for details)"
+    edited[ADVANCEMENT_LOG] = new_log
 
     summary = commit_summary(old_log, new_log)
 
