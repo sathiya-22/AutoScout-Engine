@@ -54,6 +54,11 @@ def call_groq(api_key: str, prompt: str, system: str, max_tokens: int) -> str:
         req = urllib.request.Request(GROQ_API_URL, data=body, method="POST")
         req.add_header("Authorization", f"Bearer {api_key}")
         req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
+        # Groq's endpoint sits behind Cloudflare, which blocks urllib's
+        # default "Python-urllib/x.x" User-Agent as a bot signature (403,
+        # error code 1010) — a normal-looking UA clears it.
+        req.add_header("User-Agent", "Mozilla/5.0 (compatible; AutoScout-Engine/1.0)")
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 data = json.loads(resp.read())
