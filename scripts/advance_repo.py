@@ -2,16 +2,18 @@
 """AutoScout-Engine: deep advancement pass.
 
 Each run picks the ONE repo most overdue for review, researches what's
-currently state-of-the-art for that repo's SPECIFIC problem (targeted HN +
-GitHub searches — free, no NVIDIA credits spent), and asks NVIDIA's
-llama-3.1-nemotron-70b-instruct to combine that research with its own
-knowledge to propose and directly implement ONE substantial advancement.
-Commits straight to the repo's main and logs it in that repo's own
-ADVANCEMENT_LOG.md.
+currently happening around that repo's SPECIFIC problem (targeted HN +
+GitHub searches — free, no Groq tokens spent), and asks Groq's
+llama-3.1-8b-instant to combine that research with its own knowledge to
+propose and directly implement ONE substantial advancement. Commits straight
+to the repo's main and logs it in that repo's own ADVANCEMENT_LOG.md.
 
-Runs Mondays and Thursdays (~every 3 days) — NVIDIA's free tier is a
-ONE-TIME 1,000-credit allocation that never renews, unlike Gemini's daily
-reset, so this cadence is deliberately conservative.
+Runs daily — Groq's free tier renews every day (14,400 requests/day on this
+model), unlike NVIDIA's one-time credit pool, so there's no scarcity reason
+to throttle the cadence. The real constraint is the model's tight 6,000
+tokens/minute limit, which is why the context/output caps below are much
+smaller than a bigger model would need — this is deliberately optimized for
+a small, fast, high-quota model rather than a large one.
 """
 
 import base64
@@ -27,15 +29,15 @@ import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from nvidia_common import MODEL, call_nvidia, parse_sections
+from groq_common import MODEL, call_groq, parse_sections
 from registry import load_registry, pick_due_repo, save_registry, sync_registry
 
 GITHUB_API = "https://api.github.com"
-MAX_OUTPUT_TOKENS = 7000
+MAX_OUTPUT_TOKENS = 1000       # leaves ~5000 TPM headroom for input on a 6K TPM model
 
-MAX_FILES_READ = 40
-MAX_FILE_BYTES = 20_000
-MAX_CONTEXT_CHARS = 60_000
+MAX_FILES_READ = 12
+MAX_FILE_BYTES = 3_000
+MAX_CONTEXT_CHARS = 8_000      # ≈ well under the remaining TPM budget once tokenized
 
 ADVANCEMENT_LOG = "ADVANCEMENT_LOG.md"
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
@@ -95,7 +97,7 @@ def fetch_repo_context(full_name: str, token: str) -> dict[str, str] | None:
     return files
 
 
-# ── Research (free — no NVIDIA credits spent) ───────────────────────────────
+# ── Research (free — no Groq tokens spent) ──────────────────────────────────
 
 def _get_json(url: str, headers: dict | None = None):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
@@ -145,57 +147,48 @@ def research_topic(topic: str, gh_token: str) -> list[dict]:
 
     signals = [s for s in signals if s["title"] and s["url"]]
     signals.sort(key=lambda s: -s["score"])
-    return signals[:15]
+    return signals[:6]  # keep the prompt small — every token counts against the 6K TPM cap
 
 
 # ── Prompt ───────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = (
     "You are AutoScout-Engine, a deep-advancement engineer for agentic-AI "
-    "prototypes. Given a repo's current state and research signals about "
-    "what's currently happening around its specific problem, you combine "
-    "that research with your own knowledge to identify and directly "
-    "implement ONE substantial advancement — not a trivial tweak, a real "
-    "step toward a mature, production-quality project. Never regenerate the "
-    "whole project from scratch; only output files you are creating or "
-    "changing, and never break what already works."
+    "prototypes. Combine the research signals given with your own knowledge "
+    "to implement ONE substantial advancement — a real step forward, not a "
+    "trivial tweak. Never regenerate the whole project; only output files "
+    "you are creating or changing, and never break what already works. Be "
+    "concise: this model has a tight token budget."
 )
 
 ADVANCE_TEMPLATE = """\
 Repo: {full_name}
-Original topic/problem: {topic}
+Problem: {topic}
 Advancement pass: {pass_num}
 
-Research signals about what's currently happening around this SPECIFIC \
-problem (may be sparse or empty — use your own knowledge too):
+Research on this SPECIFIC problem (may be sparse — use your own knowledge too):
 {research}
 
-Advancement log so far (do not repeat any advancement already listed here):
+Advancement log (do not repeat these):
 {advancement_log}
 
 Current files:
 {file_dump}
 
-Combining the research above with your own knowledge of the current state \
-of the art for this specific problem, identify the SINGLE most valuable \
-substantial advancement this repo needs — a real feature, a better \
-architecture for part of it, proper error handling, tests, or catching up \
-to a technique/tool that's now standard for this problem. This should be a \
-meaningfully bigger step than a routine bugfix.
+Pick the ONE most valuable substantial advancement (a real feature, better \
+architecture, error handling, tests, or catching up to a now-standard \
+technique) — bigger than a routine bugfix.
 
-Output ONLY the files you are creating or modifying, one header per file, \
-in EXACTLY this form (real filename substituted in, never the literal word \
-"path"):
+Output ONLY changed/new files, one header per file, in EXACTLY this form \
+(real filename substituted in, never the literal word "path"):
 
 === <filename-or-relative-path> ===
 <the file's full new content>
 
-You MUST include an updated === {log_name} === as one of the output files: \
-take the advancement log shown above and append exactly one new dated \
-bullet describing this advancement and what research (if any) informed it \
-(keep all prior lines unchanged).
+You MUST include an updated === {log_name} === with one new dated bullet \
+appended describing this advancement (keep prior lines unchanged).
 
-No markdown fences inside any file's content.
+No markdown fences inside file content. Be concise.
 """
 
 
@@ -257,9 +250,9 @@ def push_advancement(full_name: str, files: dict[str, str], token: str,
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
-    if not nvidia_key:
-        print("ERROR: NVIDIA_API_KEY is not set.", file=sys.stderr)
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if not groq_key:
+        print("ERROR: GROQ_API_KEY is not set.", file=sys.stderr)
         sys.exit(1)
 
     gh_token = os.environ.get("SCOUT_PAT", "")
@@ -297,7 +290,7 @@ def main() -> None:
     prompt = build_prompt(entry, files, research)
 
     try:
-        raw = call_nvidia(nvidia_key, prompt, SYSTEM_PROMPT, max_tokens=MAX_OUTPUT_TOKENS)
+        raw = call_groq(groq_key, prompt, SYSTEM_PROMPT, max_tokens=MAX_OUTPUT_TOKENS)
     except RuntimeError as e:
         print(f"ERROR: {e} — leaving registry untouched for a retry next cycle.",
              file=sys.stderr)

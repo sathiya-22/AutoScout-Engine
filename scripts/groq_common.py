@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""Shared helpers for AutoScout-Engine: NVIDIA NIM call wrapper + file-section
-parsing (same '=== path ===' convention AutoScout-Lab uses, so a matured
-repo's growth logs stay in a format both systems already understand)."""
+"""Shared helpers for AutoScout-Engine: Groq call wrapper + file-section
+parsing (same '=== path ===' convention AutoScout-Lab uses).
+
+Model: llama-3.1-8b-instant — Groq's free tier gives it the largest daily
+quota of any model (14,400 requests/day, renews every day), at the cost of a
+tight 6,000-tokens-per-minute limit. That TPM limit, not the request count,
+is what actually constrains how much repo context and output this engine can
+use per call — see the caps in advance_repo.py.
+"""
 
 import json
 import re
@@ -10,9 +16,8 @@ import time
 import urllib.error
 import urllib.request
 
-NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-# Nemotron: NVIDIA's own tuning, built for agentic/tool-use accuracy.
-MODEL = "nvidia/llama-3.1-nemotron-70b-instruct"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+MODEL = "llama-3.1-8b-instant"
 MAX_RETRIES = 2
 RETRY_BASE_SEC = 20  # back-off: 20s, 40s
 
@@ -33,8 +38,8 @@ def _is_transient(err: str) -> bool:
     return any(k.lower() in err.lower() for k in keywords)
 
 
-def call_nvidia(api_key: str, prompt: str, system: str, max_tokens: int) -> str:
-    """One prompt -> response text via NVIDIA's OpenAI-compatible endpoint."""
+def call_groq(api_key: str, prompt: str, system: str, max_tokens: int) -> str:
+    """One prompt -> response text via Groq's OpenAI-compatible endpoint."""
     body = json.dumps({
         "model": MODEL,
         "messages": [
@@ -46,7 +51,7 @@ def call_nvidia(api_key: str, prompt: str, system: str, max_tokens: int) -> str:
     }).encode()
 
     for attempt in range(1, MAX_RETRIES + 1):
-        req = urllib.request.Request(NVIDIA_API_URL, data=body, method="POST")
+        req = urllib.request.Request(GROQ_API_URL, data=body, method="POST")
         req.add_header("Authorization", f"Bearer {api_key}")
         req.add_header("Content-Type", "application/json")
         try:
@@ -68,8 +73,8 @@ def call_nvidia(api_key: str, prompt: str, system: str, max_tokens: int) -> str:
                  f"retrying in {wait}s... [{err[:150]}]", flush=True)
             time.sleep(wait)
         else:
-            print(f"  NVIDIA call failed after {attempt} attempt(s): {err[:200]}",
+            print(f"  Groq call failed after {attempt} attempt(s): {err[:200]}",
                  file=sys.stderr)
             break
 
-    raise RuntimeError("NVIDIA API call exhausted retries")
+    raise RuntimeError("Groq API call exhausted retries")

@@ -2,8 +2,8 @@ name: Deep Advancement Pass
 
 on:
   schedule:
-    - cron: '0 5 * * 1,4'  # Mondays and Thursdays, 10:30 IST (05:00 UTC) — ~every 3 days
-  workflow_dispatch:          # Allow manual trigger from GitHub UI
+    - cron: '0 5 * * *'  # Daily, 10:30 IST (05:00 UTC) — Groq's free tier renews daily
+  workflow_dispatch:        # Allow manual trigger from GitHub UI
 
 permissions:
   contents: write   # commit the registry update back to this repo
@@ -23,7 +23,7 @@ jobs:
 
       - name: Advance one due repo by one deep increment
         env:
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SCOUT_PAT: ${{ secrets.SCOUT_PAT }}
         run: python scripts/advance_repo.py
 
