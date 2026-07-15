@@ -14,12 +14,15 @@ small tweak.
 - **Powered by Groq** instead of Gemini — its free tier renews every day
   (unlike a one-time credit pool), so this can run indefinitely without ever
   needing a manual top-up.
-- **Optimized for a small model**: `llama-3.1-8b-instant` gets the largest
-  daily quota Groq offers (14,400 requests/day), at the cost of a tight
-  6,000-tokens-per-minute limit. That TPM limit — not the request count — is
-  what actually constrains this engine, so the repo context and output size
-  fed to the model per cycle are deliberately small (see the caps in
-  `scripts/advance_repo.py`) to comfortably fit within it.
+- **Model: `llama-3.3-70b-versatile`**. This engine only makes ONE call a
+  day, so a small model's higher daily-request quota was never actually
+  useful here — even the 70B model's lower 1,000-requests/day cap is 1,000x
+  more than needed at this cadence. What matters at one call/day is per-call
+  token budget (12,000 tokens/minute, 2x the 8B model's 6,000) and code
+  judgment quality, and the 70B model wins both. (A first live run on the 8B
+  model produced a real regression — a working Gemini API call replaced with
+  a hardcoded stub — plus a fabricated log entry, which is why quality won
+  out over quota headroom here.)
 - **Runs daily** — since Groq's quota resets every day, there's no scarcity
   reason to throttle the cadence the way NVIDIA's one-time pool would have
   required.
@@ -34,8 +37,10 @@ small tweak.
 4. Research signals specific to that repo's problem — targeted Hacker News
    and GitHub searches (free, no Groq tokens spent) — so the model isn't
    reasoning from training-data knowledge alone.
-5. Ask Groq's `llama-3.1-8b-instant` to combine that research with its own
-   knowledge and propose ONE substantial advancement.
+5. Ask Groq's `llama-3.3-70b-versatile` to combine that research with its
+   own knowledge and propose ONE substantial advancement — with explicit
+   guardrails against faking/stubbing out real functionality and against
+   inventing log history that didn't happen.
 6. Commit the change straight to that repo's `main`, and log it in that
    repo's own `ADVANCEMENT_LOG.md`.
 

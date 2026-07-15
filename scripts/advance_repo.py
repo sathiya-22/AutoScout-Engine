@@ -4,16 +4,17 @@
 Each run picks the ONE repo most overdue for review, researches what's
 currently happening around that repo's SPECIFIC problem (targeted HN +
 GitHub searches — free, no Groq tokens spent), and asks Groq's
-llama-3.1-8b-instant to combine that research with its own knowledge to
+llama-3.3-70b-versatile to combine that research with its own knowledge to
 propose and directly implement ONE substantial advancement. Commits straight
 to the repo's main and logs it in that repo's own ADVANCEMENT_LOG.md.
 
-Runs daily — Groq's free tier renews every day (14,400 requests/day on this
-model), unlike NVIDIA's one-time credit pool, so there's no scarcity reason
-to throttle the cadence. The real constraint is the model's tight 6,000
-tokens/minute limit, which is why the context/output caps below are much
-smaller than a bigger model would need — this is deliberately optimized for
-a small, fast, high-quota model rather than a large one.
+Runs daily — this engine only needs ONE call/day, so even the 70B model's
+lower 1,000-requests/day quota (vs. the 8B model's 14,400) is 1,000x more
+than needed. What actually matters at this cadence is per-call token budget
+(12,000 TPM here, 2x the 8B model's 6,000) and code judgment quality — a
+first live run on the 8B model produced a real regression (a working Gemini
+API call replaced with a hardcoded stub) and a fabricated log entry, so the
+70B model was chosen specifically to reduce that risk.
 """
 
 import base64
@@ -33,11 +34,11 @@ from groq_common import MODEL, call_groq, parse_sections
 from registry import load_registry, pick_due_repo, save_registry, sync_registry
 
 GITHUB_API = "https://api.github.com"
-MAX_OUTPUT_TOKENS = 1000       # leaves ~5000 TPM headroom for input on a 6K TPM model
+MAX_OUTPUT_TOKENS = 2000       # leaves ~10000 TPM headroom for input on a 12K TPM model
 
-MAX_FILES_READ = 12
-MAX_FILE_BYTES = 3_000
-MAX_CONTEXT_CHARS = 8_000      # ≈ well under the remaining TPM budget once tokenized
+MAX_FILES_READ = 20
+MAX_FILE_BYTES = 6_000
+MAX_CONTEXT_CHARS = 20_000     # ≈ well under the remaining TPM budget once tokenized
 
 ADVANCEMENT_LOG = "ADVANCEMENT_LOG.md"
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
@@ -147,7 +148,7 @@ def research_topic(topic: str, gh_token: str) -> list[dict]:
 
     signals = [s for s in signals if s["title"] and s["url"]]
     signals.sort(key=lambda s: -s["score"])
-    return signals[:6]  # keep the prompt small — every token counts against the 6K TPM cap
+    return signals[:8]
 
 
 # ── Prompt ───────────────────────────────────────────────────────────────────
@@ -157,19 +158,30 @@ SYSTEM_PROMPT = (
     "prototypes. Combine the research signals given with your own knowledge "
     "to implement ONE substantial advancement — a real step forward, not a "
     "trivial tweak. Never regenerate the whole project; only output files "
-    "you are creating or changing, and never break what already works. Be "
-    "concise: this model has a tight token budget."
+    "you are creating or changing, and never break what already works.\n\n"
+    "Hard rules:\n"
+    "1. NEVER replace real, working logic (a real API call, a real "
+    "computation) with a stub, mock, placeholder, or simulated/fake data — "
+    "that is a regression, not an advancement, even if the surrounding code "
+    "looks cleaner.\n"
+    "2. Only add complexity (e.g. threading, new abstractions) if it "
+    "produces a real, measurable benefit — not for appearance.\n"
+    "3. The advancement log is exactly what is shown to you. If it says "
+    "'none yet', do not invent any prior entries — write ONLY the one new "
+    "line, using the exact date given, not a guessed or remembered one."
 )
 
 ADVANCE_TEMPLATE = """\
 Repo: {full_name}
 Problem: {topic}
 Advancement pass: {pass_num}
+Today's date (use this exact date in the log, do not guess another one): {today}
 
 Research on this SPECIFIC problem (may be sparse — use your own knowledge too):
 {research}
 
-Advancement log (do not repeat these):
+Advancement log so far — this is the COMPLETE history, verbatim, nothing is \
+hidden from you:
 {advancement_log}
 
 Current files:
@@ -177,7 +189,8 @@ Current files:
 
 Pick the ONE most valuable substantial advancement (a real feature, better \
 architecture, error handling, tests, or catching up to a now-standard \
-technique) — bigger than a routine bugfix.
+technique) — bigger than a routine bugfix. Do not remove or fake any \
+existing real functionality (see hard rule 1).
 
 Output ONLY changed/new files, one header per file, in EXACTLY this form \
 (real filename substituted in, never the literal word "path"):
@@ -185,8 +198,9 @@ Output ONLY changed/new files, one header per file, in EXACTLY this form \
 === <filename-or-relative-path> ===
 <the file's full new content>
 
-You MUST include an updated === {log_name} === with one new dated bullet \
-appended describing this advancement (keep prior lines unchanged).
+You MUST include an updated === {log_name} === with exactly ONE new bullet \
+appended, dated {today} — keep every prior line exactly as shown above, and \
+do not add any entry that isn't shown above plus this one new one.
 
 No markdown fences inside file content. Be concise.
 """
@@ -194,7 +208,8 @@ No markdown fences inside file content. Be concise.
 
 def build_prompt(entry: dict, files: dict[str, str], research: list[dict]) -> str:
     advancement_log = files.get(ADVANCEMENT_LOG,
-                                "(none yet — this is the first advancement pass.)")
+                                "(none yet — this is truly the first advancement "
+                                "pass; do not invent any earlier entries.)")
     dump = "\n\n".join(f"----- FILE: {path} -----\n{content}"
                        for path, content in files.items())
     research_text = "\n".join(f"- [{s['source']}, score {s['score']}] {s['title']} ({s['url']})"
@@ -203,6 +218,7 @@ def build_prompt(entry: dict, files: dict[str, str], research: list[dict]) -> st
         full_name=entry["full_name"],
         topic=entry.get("topic", entry["name"]),
         pass_num=entry.get("advancement_passes", 0) + 1,
+        today=date.today().isoformat(),
         research=research_text,
         advancement_log=advancement_log,
         file_dump=dump,

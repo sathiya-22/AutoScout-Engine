@@ -2,11 +2,11 @@
 """Shared helpers for AutoScout-Engine: Groq call wrapper + file-section
 parsing (same '=== path ===' convention AutoScout-Lab uses).
 
-Model: llama-3.1-8b-instant — Groq's free tier gives it the largest daily
-quota of any model (14,400 requests/day, renews every day), at the cost of a
-tight 6,000-tokens-per-minute limit. That TPM limit, not the request count,
-is what actually constrains how much repo context and output this engine can
-use per call — see the caps in advance_repo.py.
+Model: llama-3.3-70b-versatile. This engine only makes ONE call per day, so
+the small model's 14,400-requests/day headroom was never actually useful —
+even the 70B model's 1,000 requests/day is 1,000x more than we need. What
+actually matters at one call/day is per-call token budget (12,000 TPM here,
+2x the 8B model's 6,000) and raw code judgment, and the 70B model wins both.
 """
 
 import json
@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL = "llama-3.1-8b-instant"
+MODEL = "llama-3.3-70b-versatile"
 MAX_RETRIES = 2
 RETRY_BASE_SEC = 20  # back-off: 20s, 40s
 
