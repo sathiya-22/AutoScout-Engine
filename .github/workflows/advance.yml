@@ -1,0 +1,38 @@
+name: Deep Advancement Pass
+
+on:
+  schedule:
+    - cron: '0 5 * * 1,4'  # Mondays and Thursdays, 10:30 IST (05:00 UTC) — ~every 3 days
+  workflow_dispatch:          # Allow manual trigger from GitHub UI
+
+permissions:
+  contents: write   # commit the registry update back to this repo
+
+jobs:
+  advance:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Advance one due repo by one deep increment
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          SCOUT_PAT: ${{ secrets.SCOUT_PAT }}
+        run: python scripts/advance_repo.py
+
+      - name: Commit registry updates
+        run: |
+          git config user.name  "AutoScout Engine"
+          git config user.email "autoscout-engine@users.noreply.github.com"
+          if [ -d state ]; then git add state/; fi
+          git diff --staged --quiet && echo "No registry changes." || {
+            git commit -m "chore(engine): registry update $(date -u +%Y-%m-%d)"
+            git push
+          }
