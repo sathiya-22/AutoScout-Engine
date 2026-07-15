@@ -168,7 +168,10 @@ SYSTEM_PROMPT = (
     "produces a real, measurable benefit — not for appearance.\n"
     "3. The advancement log is exactly what is shown to you. If it says "
     "'none yet', do not invent any prior entries — write ONLY the one new "
-    "line, using the exact date given, not a guessed or remembered one."
+    "line, using the exact date given, not a guessed or remembered one.\n"
+    "4. If you introduce a new import/package, you MUST also update the "
+    "dependency manifest (requirements.txt, package.json, go.mod, etc.) in "
+    "the same response — an import with no declared dependency is broken."
 )
 
 ADVANCE_TEMPLATE = """\
