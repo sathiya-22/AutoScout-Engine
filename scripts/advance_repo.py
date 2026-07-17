@@ -30,6 +30,7 @@ import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from digest import update_section
 from groq_common import MODEL, call_groq, parse_sections
 from registry import load_registry, pick_due_repo, save_registry, sync_registry
 
@@ -358,6 +359,10 @@ def main() -> None:
     entry["advancement_passes"] = pass_num
     entry["last_reviewed"] = date.today().isoformat()
     save_registry(registry)
+
+    update_section(gh_token, "advance",
+                  f"**Repo**: [{full_name}](https://github.com/{full_name}) — pass {pass_num}\n"
+                  f"**Change**: {summary}")
 
     print(f"\nDone — {full_name} advanced to pass {pass_num}: {summary}")
 
