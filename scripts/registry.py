@@ -15,7 +15,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent.resolve()
 REGISTRY_PATH = REPO_ROOT / "state" / "registry.jsonl"
 GITHUB_API = "https://api.github.com"
-AUTOSCOUT_DESCRIPTION = "Auto-generated AI prototype by AutoScout"
+# Repo descriptions are now per-repo/topic-specific (for public "building in
+# public" polish), so discovery matches on a stable prefix instead of an
+# exact string. The old fixed string is also matched for repos created
+# before this change.
+AUTOSCOUT_DESCRIPTION_PREFIX = "AutoScout AI-generated prototype:"
+AUTOSCOUT_DESCRIPTION_LEGACY = "Auto-generated AI prototype by AutoScout"
+
+
+def _is_autoscout_repo(description: str | None) -> bool:
+    description = description or ""
+    return (description.startswith(AUTOSCOUT_DESCRIPTION_PREFIX)
+            or description == AUTOSCOUT_DESCRIPTION_LEGACY)
 
 
 def load_registry() -> list[dict]:
@@ -61,7 +72,7 @@ def sync_registry(owner: str, token: str) -> list[dict]:
         if not repos:
             break
         for r in repos:
-            if r.get("description") != AUTOSCOUT_DESCRIPTION:
+            if not _is_autoscout_repo(r.get("description")):
                 continue
             full_name = r["full_name"]
             live_full_names.add(full_name)
