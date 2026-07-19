@@ -53,12 +53,28 @@ class TestResearchKeywords(unittest.TestCase):
 
 
 class TestRotation(unittest.TestCase):
+    TODAY = __import__("datetime").date(2026, 7, 19)
+
     def test_never_reviewed_first(self):
         reg = [
             {"full_name": "a/1", "created": "2026-07-10", "last_reviewed": "2026-07-13"},
             {"full_name": "a/2", "created": "2026-07-08", "last_reviewed": None},
         ]
-        self.assertEqual(pick_due_repo(reg)["full_name"], "a/2")
+        self.assertEqual(pick_due_repo(reg, self.TODAY)["full_name"], "a/2")
+
+    def test_starred_repo_beats_dormant(self):
+        reg = [
+            {"full_name": "a/1", "created": "2026-05-01", "stars": 0,
+             "last_reviewed": "2026-07-10"},
+            {"full_name": "a/2", "created": "2026-05-01", "stars": 3,
+             "last_reviewed": "2026-07-15"},
+        ]
+        self.assertEqual(pick_due_repo(reg, self.TODAY)["full_name"], "a/2")
+
+    def test_all_dormant_never_stalls(self):
+        reg = [{"full_name": "a/1", "created": "2026-05-01", "stars": 0,
+                "last_reviewed": "2026-07-18"}]
+        self.assertIsNotNone(pick_due_repo(reg, self.TODAY))
 
 
 class TestCommitSummary(unittest.TestCase):
