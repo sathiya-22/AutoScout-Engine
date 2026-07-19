@@ -31,7 +31,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from digest import update_section
-from groq_common import MODEL, call_groq, parse_sections
+from groq_common import MODEL, broken_python_files, call_groq, parse_sections
 from registry import load_registry, pick_due_repo, save_registry, sync_registry
 
 GITHUB_API = "https://api.github.com"
@@ -111,15 +111,49 @@ def _get_json(url: str, headers: dict | None = None):
         return None
 
 
+RESEARCH_STOPWORDS = {
+    "and", "or", "the", "a", "an", "of", "for", "in", "on", "with", "to",
+    "from", "into", "via", "before", "after", "lack", "need", "better",
+    "challenges", "difficulty", "high", "low", "robust", "existing",
+    "excessive", "unpredictable", "rising",
+}
+
+
+def research_keywords(topic: str) -> str:
+    """Boil an auto-generated problem title down to its searchable core.
+
+    Searching the full literal title ('lack of robust tools for ai agents
+    to interact with office files') matches almost nothing; its keyword
+    core ('ai agents office files') actually finds related work."""
+    words = [w for w in re.sub(r"[^a-z0-9 ]", " ", topic.lower()).split()
+             if w not in RESEARCH_STOPWORDS and len(w) > 1]
+    return " ".join(words[:4])
+
+
 def research_topic(topic: str, gh_token: str) -> list[dict]:
     """Targeted HN + GitHub signals for this repo's SPECIFIC problem, not
     the general agentic-AI space — grounds the advancement in what's
-    currently happening around that exact idea."""
+    currently happening around that exact idea.
+
+    Tries the specific (up to 4 keyword) query first; if that ANDed query
+    matches nothing, falls back once to a broader 2-keyword query rather
+    than handing the model an empty research section."""
+    query = research_keywords(topic)
+    signals = _search_signals(query, gh_token)
+    if not signals and len(query.split()) > 2:
+        fallback = " ".join(query.split()[:2])
+        print(f"Query      : {query!r} found nothing — retrying as {fallback!r}")
+        signals = _search_signals(fallback, gh_token)
+    return signals
+
+
+def _search_signals(query: str, gh_token: str) -> list[dict]:
     since_ts = int((datetime.now(timezone.utc) - timedelta(days=120)).timestamp())
+    print(f"Query      : {query!r}")
     signals = []
 
     params = urllib.parse.urlencode({
-        "query": topic, "tags": "story",
+        "query": query, "tags": "story",
         "numericFilters": f"created_at_i>{since_ts}", "hitsPerPage": 8,
     })
     data = _get_json(f"https://hn.algolia.com/api/v1/search_by_date?{params}")
@@ -134,8 +168,10 @@ def research_topic(topic: str, gh_token: str) -> list[dict]:
     headers = {"Accept": "application/vnd.github+json"}
     if gh_token:
         headers["Authorization"] = f"token {gh_token}"
+    # name/description only — README matching drags in mega "awesome list"
+    # repos that mention everything; the star cap filters the same noise.
     params = urllib.parse.urlencode({
-        "q": f'"{topic}" in:name,description,readme',
+        "q": f"{query} in:name,description stars:10..50000",
         "sort": "stars", "order": "desc", "per_page": 8,
     })
     data = _get_json(f"https://api.github.com/search/repositories?{params}", headers)
@@ -335,6 +371,13 @@ def main() -> None:
         print("ERROR: no sections found in model response — retry next cycle.",
              file=sys.stderr)
         print(raw[:1000], file=sys.stderr)
+        sys.exit(1)
+
+    if broken_python_files(edited):
+        # Pushing syntactically-broken code would degrade a working repo —
+        # abort and let the next cycle retry from a clean slate.
+        print("ERROR: model produced Python that doesn't compile — "
+             "aborting this pass without pushing.", file=sys.stderr)
         sys.exit(1)
 
     today = date.today().isoformat()

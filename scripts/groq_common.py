@@ -23,12 +23,34 @@ RETRY_BASE_SEC = 20  # back-off: 20s, 40s
 
 
 def parse_sections(raw: str) -> dict[str, str]:
-    """Parse '=== path ===\\ncontent' sections into {path: content}."""
+    """Parse '=== path ===\\ncontent' sections into {path: content}.
+
+    Paths come from model output, so absolute paths and '..' components are
+    dropped — they would escape the temp checkout these files get written to."""
     files: dict[str, str] = {}
     pattern = r"=== ([\w./\-]+) ===\n(.*?)(?==== [\w./\-]+ ===|\Z)"
     for match in re.finditer(pattern, raw, re.DOTALL):
-        files[match.group(1).strip()] = match.group(2).strip()
+        path = match.group(1).strip()
+        if path.startswith("/") or ".." in path.split("/"):
+            print(f"  WARN: skipping unsafe path from model output: {path!r}",
+                  file=sys.stderr)
+            continue
+        files[path] = match.group(2).strip()
     return files
+
+
+def broken_python_files(files: dict[str, str]) -> list[str]:
+    """Names of .py files in the set that fail to even compile — the
+    cheapest possible 'did the model write valid code' check."""
+    broken = []
+    for path, content in files.items():
+        if path.endswith(".py"):
+            try:
+                compile(content, path, "exec")
+            except SyntaxError as e:
+                print(f"  WARN: {path} has a syntax error: {e}", file=sys.stderr)
+                broken.append(path)
+    return broken
 
 
 def _is_transient(err: str) -> bool:
