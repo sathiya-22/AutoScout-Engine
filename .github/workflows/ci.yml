@@ -19,5 +19,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Run unit tests (stdlib only — no pip install needed)
+      - name: Run unit tests
+        # TestVerifyPythonRepo really creates venvs and pip-installs — no
+        # extra setup needed, python -m venv + pip are already available.
         run: python -m unittest discover tests -v
