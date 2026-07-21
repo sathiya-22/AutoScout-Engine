@@ -107,14 +107,15 @@ class TestVerifyPythonRepo(unittest.TestCase):
 
 class TestVerifyWithRetries(unittest.TestCase):
     def test_succeeds_first_try_no_model_call_needed(self):
-        verified, _ = advance_repo.verify_with_retries("fake-key", {"main.py": "print('hi')\n"})
+        verified, _ = advance_repo.verify_with_retries(
+            "fake-key", {}, {"main.py": "print('hi')\n"})
         self.assertIsNotNone(verified)
 
     def test_fix_applied_on_retry(self):
         broken = {"main.py": "print(undefined_var)\n"}
         fixed_raw = "=== main.py ===\nprint('fixed')\n"
         with unittest.mock.patch("advance_repo.call_groq", return_value=fixed_raw):
-            verified, _ = advance_repo.verify_with_retries("fake-key", broken)
+            verified, _ = advance_repo.verify_with_retries("fake-key", {}, broken)
         self.assertIsNotNone(verified)
         self.assertEqual(verified["main.py"], "print('fixed')")
 
@@ -122,8 +123,15 @@ class TestVerifyWithRetries(unittest.TestCase):
         broken = {"main.py": "print(undefined_var)\n"}
         still_broken_raw = "=== main.py ===\nprint(undefined_var)\n"
         with unittest.mock.patch("advance_repo.call_groq", return_value=still_broken_raw):
-            verified, _ = advance_repo.verify_with_retries("fake-key", broken)
+            verified, _ = advance_repo.verify_with_retries("fake-key", {}, broken)
         self.assertIsNone(verified)
+
+    def test_untouched_dependent_file_break_is_caught(self):
+        base = {"main.py": "from config import VALUE\nprint(VALUE)\n"}
+        edited = {"config.py": "# VALUE removed by mistake\n"}
+        verified, reason = advance_repo.verify_with_retries("fake-key", base, edited)
+        self.assertIsNone(verified)
+        self.assertIn("ImportError", reason)
 
 
 if __name__ == "__main__":

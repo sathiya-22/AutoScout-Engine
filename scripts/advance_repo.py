@@ -306,24 +306,29 @@ def sanitize_log(old_log: str, model_log: str, today: str) -> str:
     return (old_log.rstrip("\n") + "\n" if old_log.strip() else "") + "\n".join(new_dated_lines)
 
 
-def verify_with_retries(api_key: str, files: dict[str, str]) -> tuple[dict[str, str] | None, str]:
-    """Sandboxed runtime check with up to MAX_VERIFY_RETRIES model-driven fix
-    attempts. Returns (verified_files, reason) on success, (None, reason) if
-    still broken after all retries — caller aborts the push in that case."""
-    current = files
+def verify_with_retries(api_key: str, base_files: dict[str, str],
+                        edited_files: dict[str, str]) -> tuple[dict[str, str] | None, str]:
+    """Sandboxed runtime check against the MERGED view (unchanged repo files
+    + this pass's edits) — verifying edited_files alone would miss a change
+    that breaks an untouched file that depends on it. Up to
+    MAX_VERIFY_RETRIES model-driven fix attempts. Returns
+    (verified_edited_subset, reason) on success — only the edited subset is
+    ever pushed — or (None, reason) if still broken after all retries."""
+    current_edits = edited_files
     for attempt in range(1, MAX_VERIFY_RETRIES + 2):
-        broken = broken_python_files(current)
+        merged = {**base_files, **current_edits}
+        broken = broken_python_files(current_edits)
         result = ({"ok": False, "reason": f"{broken[0]} doesn't compile"} if broken
-                 else verify_python_repo(current))
+                 else verify_python_repo(merged))
         if result["ok"]:
             print(f"  Verify attempt {attempt}: OK ({result['reason']})")
-            return current, result["reason"]
+            return current_edits, result["reason"]
 
         print(f"  Verify attempt {attempt}: FAILED ({result['reason']})")
         if attempt == MAX_VERIFY_RETRIES + 1:
             return None, result["reason"]
 
-        dump = "\n\n".join(f"----- FILE: {p} -----\n{c}" for p, c in current.items())
+        dump = "\n\n".join(f"----- FILE: {p} -----\n{c}" for p, c in merged.items())
         try:
             raw = call_groq(api_key, FIX_TEMPLATE.format(error=result["reason"], file_dump=dump),
                             SYSTEM_PROMPT, max_tokens=MAX_OUTPUT_TOKENS)
@@ -333,7 +338,7 @@ def verify_with_retries(api_key: str, files: dict[str, str]) -> tuple[dict[str, 
         fix = parse_sections(raw)
         if not fix:
             return None, result["reason"]
-        current = {**current, **fix}
+        current_edits = {**current_edits, **fix}
     return None, "exhausted retries"  # unreachable, satisfies static analysis
 
 
@@ -430,7 +435,7 @@ def main() -> None:
         print(raw[:1000], file=sys.stderr)
         sys.exit(1)
 
-    verified, reason = verify_with_retries(groq_key, edited)
+    verified, reason = verify_with_retries(groq_key, files, edited)
     if verified is None:
         # Pushing broken code would degrade a working repo — abort and let
         # the next cycle retry from a clean slate.
