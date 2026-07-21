@@ -129,7 +129,9 @@ class TestVerifyWithRetries(unittest.TestCase):
     def test_untouched_dependent_file_break_is_caught(self):
         base = {"main.py": "from config import VALUE\nprint(VALUE)\n"}
         edited = {"config.py": "# VALUE removed by mistake\n"}
-        verified, reason = advance_repo.verify_with_retries("fake-key", base, edited)
+        still_broken_raw = "=== config.py ===\n# still broken\n"
+        with unittest.mock.patch("advance_repo.call_groq", return_value=still_broken_raw):
+            verified, reason = advance_repo.verify_with_retries("fake-key", base, edited)
         self.assertIsNone(verified)
         self.assertIn("ImportError", reason)
 
