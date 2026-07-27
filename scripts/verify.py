@@ -113,3 +113,57 @@ def verify_python_repo(files: dict[str, str]) -> dict:
             return {"ok": True, "reason": "clean exit"}
         ok, reason = _classify_failure(result.stderr)
         return {"ok": ok, "reason": reason}
+
+
+def run_script_in_sandbox(files: dict[str, str], script_filename: str,
+                          timeout: int = RUN_TIMEOUT_SEC) -> dict:
+    """Runs `script_filename` (already present in `files`) inside the same
+    isolated sandbox as verify_python_repo, and returns its captured stdout.
+
+    Used by the research stage to get a REAL, ground-truth measurement
+    instead of trusting whatever numbers the model claims — the model
+    proposes the benchmark, but only what this function actually observes
+    the script print is ever treated as fact. Never receives real secrets
+    (env built from scratch, same as verify_python_repo)."""
+    if script_filename not in files:
+        return {"status": "error", "output": "", "reason": "script file missing from file set"}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo_dir = Path(tmp) / "repo"
+        repo_dir.mkdir()
+        for filename, content in files.items():
+            target = repo_dir / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content + "\n", encoding="utf-8")
+
+        venv_dir = Path(tmp) / "venv"
+        try:
+            venv.create(venv_dir, with_pip=True)
+        except Exception as e:
+            return {"status": "error", "output": "", "reason": f"venv creation failed (infra): {e}"}
+
+        py, pip = venv_dir / "bin" / "python", venv_dir / "bin" / "pip"
+        req_file = repo_dir / REQUIREMENTS
+        if req_file.exists():
+            try:
+                subprocess.run(
+                    [str(pip), "install", "-q", "-r", str(req_file)],
+                    cwd=repo_dir, capture_output=True, text=True,
+                    timeout=INSTALL_TIMEOUT_SEC, env=dict(SANDBOX_ENV),
+                )
+            except subprocess.TimeoutExpired:
+                return {"status": "error", "output": "", "reason": "pip install timed out (infra)"}
+
+        try:
+            result = subprocess.run(
+                [str(py), script_filename],
+                cwd=repo_dir, capture_output=True, text=True,
+                timeout=timeout, stdin=subprocess.DEVNULL, env=dict(SANDBOX_ENV),
+            )
+        except subprocess.TimeoutExpired:
+            return {"status": "error", "output": "", "reason": f"timed out after {timeout}s"}
+
+        if result.returncode != 0:
+            return {"status": "error", "output": result.stdout + result.stderr,
+                    "reason": f"exit code {result.returncode}: {result.stderr[-300:]}"}
+        return {"status": "ran", "output": result.stdout, "reason": "clean exit"}

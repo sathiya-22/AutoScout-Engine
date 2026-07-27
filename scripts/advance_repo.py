@@ -38,6 +38,7 @@ from pathlib import Path
 from digest import update_section
 from groq_common import MODEL, broken_python_files, call_groq, parse_sections
 from registry import load_registry, pick_due_repo, save_registry, sync_registry
+from research import RESEARCH_LOG, run_research_stage
 from verify import verify_python_repo
 
 MAX_VERIFY_RETRIES = 2
@@ -455,6 +456,17 @@ def main() -> None:
     edited[ADVANCEMENT_LOG] = new_log
 
     summary = commit_summary(old_log, new_log)
+
+    old_research_log = files.get(RESEARCH_LOG, "")
+    research_files, research_entry = run_research_stage(
+        call_groq, groq_key, entry, {**files, **edited}, old_research_log,
+        today, pass_num)
+    if research_entry:
+        edited[RESEARCH_LOG] = (old_research_log.rstrip("\n") + "\n\n" if old_research_log.strip()
+                                else "") + research_entry
+        edited.update(research_files)
+        summary += " + research"
+        print(f"  research  : {research_entry.splitlines()[1]}")
 
     try:
         push_advancement(full_name, edited, gh_token, pass_num, summary)
