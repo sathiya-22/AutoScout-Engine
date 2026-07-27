@@ -35,9 +35,11 @@ import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import eval_harness
 from digest import update_section
 from groq_common import MODEL, broken_python_files, call_groq, parse_sections
 from registry import load_registry, pick_due_repo, save_registry, sync_registry
+from research import RESEARCH_LOG, run_research_stage
 from verify import verify_python_repo
 
 MAX_VERIFY_RETRIES = 2
@@ -392,6 +394,12 @@ def main() -> None:
         print("ERROR: SCOUT_PAT is not set.", file=sys.stderr)
         sys.exit(1)
 
+    # Dedicated to the research stage + eval-harness judge calls, isolated
+    # from the main advancement GROQ_API_KEY's budget above — a separate
+    # Groq key/quota, not a separate provider. Optional — both stages are
+    # simply skipped if this isn't configured yet.
+    research_key = os.environ.get("GROQ_RESEARCH_API_KEY", "")
+
     print("─── AutoScout-Engine: deep advancement pass ───")
     owner = get_authenticated_user(gh_token)
     registry = sync_registry(owner, gh_token)
@@ -418,7 +426,23 @@ def main() -> None:
     research = research_topic(entry.get("topic", entry["name"]), gh_token)
     print(f"Research   : {len(research)} signal(s) for '{entry.get('topic')}'")
 
+    original_files = files  # pre-pass snapshot — the freeze-check baseline
     old_log = files.get(ADVANCEMENT_LOG, "")
+
+    before_score = None
+    harness_files: dict[str, str] = {}
+    if research_key and eval_harness.EVAL_SCRIPT not in files:
+        harness_files = eval_harness.propose_eval_harness(
+            call_groq, research_key, entry, files) or {}
+        if harness_files:
+            files = {**files, **harness_files}
+            before_score = eval_harness.run_eval(files)
+            print(f"  eval harness: created ({eval_harness.EVAL_DATASET}, "
+                 f"{eval_harness.EVAL_SCRIPT}) — baseline score {before_score}")
+    elif eval_harness.EVAL_SCRIPT in files:
+        before_score = eval_harness.run_eval(files)
+        print(f"  eval harness: baseline score {before_score}")
+
     prompt = build_prompt(entry, files, research)
 
     try:
@@ -434,6 +458,7 @@ def main() -> None:
              file=sys.stderr)
         print(raw[:1000], file=sys.stderr)
         sys.exit(1)
+    edited = eval_harness.freeze_eval_files(edited, original_files)
 
     verified, reason = verify_with_retries(groq_key, files, edited)
     if verified is None:
@@ -443,6 +468,13 @@ def main() -> None:
              f"({reason}) — aborting this pass without pushing.", file=sys.stderr)
         sys.exit(1)
     edited = verified
+    edited.update(harness_files)  # always push a newly-created harness this pass
+
+    after_score = eval_harness.run_eval({**files, **edited}) if before_score is not None else None
+    if eval_harness.is_regression(before_score, after_score):
+        print(f"ERROR: eval score regressed ({before_score} -> {after_score}) — "
+             "aborting this pass without pushing.", file=sys.stderr)
+        sys.exit(1)
 
     today = date.today().isoformat()
     model_log = edited.get(ADVANCEMENT_LOG, "")
@@ -455,6 +487,33 @@ def main() -> None:
     edited[ADVANCEMENT_LOG] = new_log
 
     summary = commit_summary(old_log, new_log)
+
+    old_research_log = files.get(RESEARCH_LOG, "")
+    if research_key:
+        research_files, research_entry = run_research_stage(
+            call_groq, research_key, entry, {**files, **edited}, old_research_log,
+            today, pass_num)
+        if research_entry:
+            edited[RESEARCH_LOG] = (old_research_log.rstrip("\n") + "\n\n"
+                                    if old_research_log.strip() else "") + research_entry
+            edited.update(research_files)
+            summary += " + research"
+            print(f"  research  : {research_entry.splitlines()[1]}")
+
+    if before_score is not None:
+        old_scores_log = files.get(eval_harness.EVAL_SCORES_LOG, "")
+        judge = None
+        if research_key:
+            diff_summary = "\n\n".join(
+                f"--- {p} ---\n{c[:800]}" for p, c in edited.items()
+                if p not in (eval_harness.EVAL_DATASET, eval_harness.EVAL_SCRIPT,
+                            eval_harness.EVAL_SCORES_LOG))
+            judge = eval_harness.judge_score(call_groq, research_key,
+                                             diff_summary, before_score, after_score)
+        edited[eval_harness.EVAL_SCORES_LOG] = eval_harness.append_score_log(
+            old_scores_log, today, pass_num, after_score, judge)
+        summary += " + eval"
+        print(f"  eval score : {before_score} -> {after_score}  (judge: {judge})")
 
     try:
         push_advancement(full_name, edited, gh_token, pass_num, summary)

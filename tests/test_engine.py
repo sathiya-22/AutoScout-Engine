@@ -7,6 +7,7 @@ generated code in a sandbox (that's the point of the module under test).
 Run: python3 -m unittest discover tests -v
 """
 
+import json
 import sys
 import unittest
 import unittest.mock
@@ -17,8 +18,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 import advance_repo  # noqa: E402 — imported as a module so call_groq can be patched
 from advance_repo import (commit_summary, research_keywords,  # noqa: E402
                           sanitize_log)
+from eval_harness import (append_score_log, freeze_eval_files,  # noqa: E402
+                          is_regression, judge_score, parse_harness_proposal,
+                          run_eval)
 from groq_common import broken_python_files, parse_sections  # noqa: E402
 from registry import pick_due_repo  # noqa: E402
+from research import (extract_result, parse_research_proposal,  # noqa: E402
+                      run_research_stage, sanitize_interpretation)
 from verify import verify_python_repo  # noqa: E402
 
 
@@ -134,6 +140,123 @@ class TestVerifyWithRetries(unittest.TestCase):
             verified, reason = advance_repo.verify_with_retries("fake-key", base, edited)
         self.assertIsNone(verified)
         self.assertIn("ImportError", reason)
+
+
+class TestResearchProposalParsing(unittest.TestCase):
+    def test_benchmark_proposal_parsed(self):
+        raw = ("QUESTION: is A faster than B?\nTYPE: benchmark\n"
+              "=== research/bench.py ===\n"
+              "print('AUTOSCOUT_RESEARCH_RESULT: {\"a\": 1}')\n")
+        parsed = parse_research_proposal(raw)
+        self.assertEqual(parsed["type"], "benchmark")
+        self.assertEqual(parsed["script_filename"], "research/bench.py")
+
+    def test_path_traversal_rejected(self):
+        raw = ("QUESTION: q\nTYPE: benchmark\n"
+              "=== research/../../evil.py ===\nprint('hi')\n")
+        self.assertIsNone(parse_research_proposal(raw))
+
+
+class TestExtractResult(unittest.TestCase):
+    def test_extracts_json_after_marker(self):
+        stdout = "noise\nAUTOSCOUT_RESEARCH_RESULT: {\"ms\": 4.2}\n"
+        self.assertEqual(extract_result(stdout), {"ms": 4.2})
+
+    def test_no_marker_returns_none(self):
+        self.assertIsNone(extract_result("nothing here\n"))
+
+
+class TestSanitizeInterpretation(unittest.TestCase):
+    def test_fabricated_number_discarded(self):
+        result = {"a_ms": 5.0}
+        text = "This is a 90% speedup over the baseline."
+        self.assertIn("discarded", sanitize_interpretation(text, result, "q"))
+
+    def test_clean_interpretation_kept(self):
+        result = {"a_ms": 5.0}
+        text = "Approach at 5.0ms — acceptable."
+        self.assertEqual(sanitize_interpretation(text, result, "q"), text)
+
+
+class TestRunResearchStage(unittest.TestCase):
+    def test_benchmark_success_produces_entry_and_script_file(self):
+        proposal_raw = ("QUESTION: is A faster?\nTYPE: benchmark\n"
+                        "=== research/bench.py ===\n"
+                        "print('AUTOSCOUT_RESEARCH_RESULT: {\"a_ms\": 1.0}')\n")
+        interp_raw = "A at 1.0ms is fast enough — no change needed."
+        calls = iter([proposal_raw, interp_raw])
+        call_llm = unittest.mock.Mock(side_effect=lambda *a, **k: next(calls))
+
+        extra_files, entry_text = run_research_stage(
+            call_llm, "fake-key",
+            {"full_name": "x/y", "name": "y", "topic": "t", "advancement_passes": 0},
+            {"main.py": "print('hi')\n"}, "", "2026-07-27", 1)
+
+        self.assertIn("research/bench.py", extra_files)
+        self.assertIn("Measured result", entry_text)
+
+    def test_no_proposal_yields_nothing(self):
+        call_llm = unittest.mock.Mock(return_value="garbage")
+        extra_files, entry_text = run_research_stage(
+            call_llm, "fake-key",
+            {"full_name": "x/y", "name": "y", "topic": "t", "advancement_passes": 0},
+            {"main.py": "print('hi')\n"}, "", "2026-07-27", 1)
+        self.assertEqual(extra_files, {})
+        self.assertEqual(entry_text, "")
+
+
+class TestEvalHarnessParsing(unittest.TestCase):
+    def test_valid_proposal_parsed(self):
+        raw = ("=== eval/dataset.json ===\n[{\"input\": 1}]\n"
+              "=== eval/run_eval.py ===\nprint('AUTOSCOUT_EVAL_SCORE: {\"score\": 1.0}')\n")
+        parsed = parse_harness_proposal(raw)
+        self.assertIn("eval/dataset.json", parsed)
+        self.assertIn("eval/run_eval.py", parsed)
+
+    def test_missing_dataset_rejected(self):
+        raw = "=== eval/run_eval.py ===\nprint('x')\n"
+        self.assertIsNone(parse_harness_proposal(raw))
+
+
+class TestFreezeEvalFiles(unittest.TestCase):
+    def test_pre_existing_eval_files_stripped(self):
+        original = {"eval/dataset.json": "[]", "eval/run_eval.py": "old"}
+        edited = {"eval/run_eval.py": "model tried to rewrite this", "main.py": "print(1)"}
+        result = freeze_eval_files(edited, original)
+        self.assertNotIn("eval/run_eval.py", result)
+        self.assertIn("main.py", result)
+
+    def test_newly_created_eval_files_not_stripped(self):
+        edited = {"eval/run_eval.py": "brand new"}
+        self.assertIn("eval/run_eval.py", freeze_eval_files(edited, {}))
+
+
+class TestIsRegression(unittest.TestCase):
+    def test_lower_after_is_regression(self):
+        self.assertTrue(is_regression({"score": 5.0}, {"score": 3.0}))
+
+    def test_missing_score_is_inconclusive(self):
+        self.assertFalse(is_regression(None, {"score": 1.0}))
+
+
+class TestJudgeScore(unittest.TestCase):
+    def test_parses_json_from_model_response(self):
+        call_llm = unittest.mock.Mock(
+            return_value='{"quality_score": 6, "reasoning": "ok"}')
+        result = judge_score(call_llm, "fake-key", "diff", {"score": 1}, {"score": 2})
+        self.assertEqual(result["quality_score"], 6)
+
+
+class TestAppendScoreLog(unittest.TestCase):
+    def test_appends_valid_json_line(self):
+        log = append_score_log("", "2026-07-27", 1, {"score": 3.0}, None)
+        entry = json.loads(log.strip())
+        self.assertEqual(entry["pass"], 1)
+
+
+class TestRunEvalNoScript(unittest.TestCase):
+    def test_missing_script_returns_none(self):
+        self.assertIsNone(run_eval({"main.py": "print(1)"}))
 
 
 if __name__ == "__main__":

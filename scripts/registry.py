@@ -98,8 +98,10 @@ def sync_registry(owner: str, token: str) -> list[dict]:
     return pruned
 
 
-ACTIVE_AGE_DAYS = 14    # new repos stay in the active tier this long
-DORMANT_REVISIT_DAYS = 30  # untouched dormant repos become due after this
+ACTIVE_AGE_DAYS = 30    # new repos stay in the active tier this long — raised
+                        # from 14 so each repo gets more real-research passes
+                        # before demotion, without slowing daily new-repo creation
+DORMANT_REVISIT_DAYS = 45  # untouched dormant repos become due after this
 
 
 def is_active(entry: dict, today: date | None = None) -> bool:
