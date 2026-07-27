@@ -15,6 +15,7 @@ is flagged as a real bug. Ambiguous cases (timeouts, infra hiccups) default
 to passing rather than blocking a push on a false positive.
 """
 
+import json
 import re
 import subprocess
 import tempfile
@@ -167,3 +168,17 @@ def run_script_in_sandbox(files: dict[str, str], script_filename: str,
             return {"status": "error", "output": result.stdout + result.stderr,
                     "reason": f"exit code {result.returncode}: {result.stderr[-300:]}"}
         return {"status": "ran", "output": result.stdout, "reason": "clean exit"}
+
+
+def extract_marker_json(stdout: str, marker: str) -> dict | None:
+    """Finds the first line starting with `marker` and parses the JSON that
+    follows it. Shared by research.py and eval_harness.py — the one place
+    both trust a script's claimed numbers, because it's this function (not
+    the model) doing the reading."""
+    for line in stdout.splitlines():
+        if line.startswith(marker):
+            try:
+                return json.loads(line[len(marker):].strip())
+            except json.JSONDecodeError:
+                return None
+    return None

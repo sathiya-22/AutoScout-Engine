@@ -7,6 +7,7 @@ generated code in a sandbox (that's the point of the module under test).
 Run: python3 -m unittest discover tests -v
 """
 
+import json
 import sys
 import unittest
 import unittest.mock
@@ -17,6 +18,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 import advance_repo  # noqa: E402 — imported as a module so call_groq can be patched
 from advance_repo import (commit_summary, research_keywords,  # noqa: E402
                           sanitize_log)
+from eval_harness import (append_score_log, freeze_eval_files,  # noqa: E402
+                          is_regression, judge_score, parse_harness_proposal,
+                          run_eval)
 from groq_common import broken_python_files, parse_sections  # noqa: E402
 from registry import pick_due_repo  # noqa: E402
 from research import (extract_result, parse_research_proposal,  # noqa: E402
@@ -199,6 +203,60 @@ class TestRunResearchStage(unittest.TestCase):
             {"main.py": "print('hi')\n"}, "", "2026-07-27", 1)
         self.assertEqual(extra_files, {})
         self.assertEqual(entry_text, "")
+
+
+class TestEvalHarnessParsing(unittest.TestCase):
+    def test_valid_proposal_parsed(self):
+        raw = ("=== eval/dataset.json ===\n[{\"input\": 1}]\n"
+              "=== eval/run_eval.py ===\nprint('AUTOSCOUT_EVAL_SCORE: {\"score\": 1.0}')\n")
+        parsed = parse_harness_proposal(raw)
+        self.assertIn("eval/dataset.json", parsed)
+        self.assertIn("eval/run_eval.py", parsed)
+
+    def test_missing_dataset_rejected(self):
+        raw = "=== eval/run_eval.py ===\nprint('x')\n"
+        self.assertIsNone(parse_harness_proposal(raw))
+
+
+class TestFreezeEvalFiles(unittest.TestCase):
+    def test_pre_existing_eval_files_stripped(self):
+        original = {"eval/dataset.json": "[]", "eval/run_eval.py": "old"}
+        edited = {"eval/run_eval.py": "model tried to rewrite this", "main.py": "print(1)"}
+        result = freeze_eval_files(edited, original)
+        self.assertNotIn("eval/run_eval.py", result)
+        self.assertIn("main.py", result)
+
+    def test_newly_created_eval_files_not_stripped(self):
+        edited = {"eval/run_eval.py": "brand new"}
+        self.assertIn("eval/run_eval.py", freeze_eval_files(edited, {}))
+
+
+class TestIsRegression(unittest.TestCase):
+    def test_lower_after_is_regression(self):
+        self.assertTrue(is_regression({"score": 5.0}, {"score": 3.0}))
+
+    def test_missing_score_is_inconclusive(self):
+        self.assertFalse(is_regression(None, {"score": 1.0}))
+
+
+class TestJudgeScore(unittest.TestCase):
+    def test_parses_json_from_model_response(self):
+        call_llm = unittest.mock.Mock(
+            return_value='{"quality_score": 6, "reasoning": "ok"}')
+        result = judge_score(call_llm, "fake-key", "diff", {"score": 1}, {"score": 2})
+        self.assertEqual(result["quality_score"], 6)
+
+
+class TestAppendScoreLog(unittest.TestCase):
+    def test_appends_valid_json_line(self):
+        log = append_score_log("", "2026-07-27", 1, {"score": 3.0}, None)
+        entry = json.loads(log.strip())
+        self.assertEqual(entry["pass"], 1)
+
+
+class TestRunEvalNoScript(unittest.TestCase):
+    def test_missing_script_returns_none(self):
+        self.assertIsNone(run_eval({"main.py": "print(1)"}))
 
 
 if __name__ == "__main__":
