@@ -46,6 +46,15 @@ BENIGN_EXCEPTIONS = {"EOFError", "KeyboardInterrupt", "SystemExit"}
 AUTH_KEYWORDS = ("api key", "apikey", "unauthorized", "authentication",
                  "permission_denied", "invalid_api_key", "401", "403",
                  "credentials", "api_key_invalid")
+# A multi-command Typer/Click CLI run with zero args (our smoke test never
+# passes a subcommand) always exits non-zero with a rich-styled box ending
+# in a border line, not a recognizable "SomeError:" line — e.g.:
+#   ╭─ Error ──────────────────────╮
+#   │ Missing command.             │
+#   ╰──────────────────────────────╯
+# This is the CLI correctly asking for a subcommand, not a code defect.
+CLI_USAGE_KEYWORDS = ("missing command", "no such command", "missing argument",
+                      "missing option", "try '--help'", 'try "--help"')
 
 
 def _classify_failure(stderr: str) -> tuple[bool, str]:
@@ -60,6 +69,9 @@ def _classify_failure(stderr: str) -> tuple[bool, str]:
         return False, last
     if any(k in stderr.lower() for k in AUTH_KEYWORDS):
         return True, "failed on API auth with a dummy key — expected"
+    if any(k in stderr.lower() for k in CLI_USAGE_KEYWORDS):
+        return True, ("CLI requires an explicit subcommand/argument — expected "
+                      "when smoke-tested with none")
     if exc_name:
         return False, last
     return False, f"non-zero exit, no recognizable exception: {last[:200]}"

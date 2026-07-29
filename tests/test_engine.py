@@ -25,7 +25,7 @@ from groq_common import broken_python_files, parse_sections  # noqa: E402
 from registry import pick_due_repo  # noqa: E402
 from research import (extract_result, parse_research_proposal,  # noqa: E402
                       run_research_stage, sanitize_interpretation)
-from verify import verify_python_repo  # noqa: E402
+from verify import _classify_failure, verify_python_repo  # noqa: E402
 
 
 class TestParseSections(unittest.TestCase):
@@ -109,6 +109,21 @@ class TestVerifyPythonRepo(unittest.TestCase):
                "if os.environ.get('GROQ_API_KEY') == 'dummy-key-for-verification':\n"
                "    print('401 Unauthorized', file=sys.stderr); sys.exit(1)\n")
         self.assertTrue(verify_python_repo({"main.py": code})["ok"])
+
+class TestClassifyFailureCliUsage(unittest.TestCase):
+    def test_rich_boxed_missing_command_is_benign(self):
+        # A Typer/Click CLI with >1 @app.command() exits 2 with a rich-styled
+        # box when run with zero args — the last line is just a box border,
+        # not a recognizable "SomeError:" (see 2026-07-29 incident).
+        stderr = (
+            "Usage: main.py [OPTIONS] COMMAND [ARGS]...\n"
+            "╭─ Error ────────────────────────────────────────────\n"
+            "│ Missing command. │\n"
+            "╰────────────────────────────────────────────╯\n"
+        )
+        ok, reason = _classify_failure(stderr)
+        self.assertTrue(ok)
+        self.assertIn("subcommand", reason)
 
 
 class TestVerifyWithRetries(unittest.TestCase):
