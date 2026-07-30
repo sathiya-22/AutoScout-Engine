@@ -87,9 +87,13 @@ above — no other numeric claim. Be concise.
 """
 
 
+CONTEXT_DUMP_EXCLUDE_PREFIXES = ("research/", "eval/")
+
+
 def build_propose_prompt(entry: dict, files: dict[str, str], research_log: str) -> str:
     dump = "\n\n".join(f"----- FILE: {path} -----\n{content}"
-                       for path, content in files.items())
+                       for path, content in files.items()
+                       if not path.startswith(CONTEXT_DUMP_EXCLUDE_PREFIXES))
     return PROPOSE_TEMPLATE.format(
         full_name=entry["full_name"],
         topic=entry.get("topic", entry["name"]),
