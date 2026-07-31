@@ -21,7 +21,7 @@ from advance_repo import (build_prompt, commit_summary,  # noqa: E402
 from eval_harness import (append_score_log, freeze_eval_files,  # noqa: E402
                           is_regression, judge_score, parse_harness_proposal,
                           run_eval)
-from groq_common import broken_python_files, parse_sections  # noqa: E402
+from groq_common import _is_transient, broken_python_files, parse_sections  # noqa: E402
 from registry import pick_due_repo  # noqa: E402
 from research import (build_propose_prompt, extract_result,  # noqa: E402
                       parse_research_proposal, run_research_stage,
@@ -299,6 +299,27 @@ class TestPromptDumpExcludesArtifacts(unittest.TestCase):
         prompt = build_propose_prompt(self.entry, files, "")
         self.assertIn("main.py", prompt)
         self.assertNotIn("run_eval.py", prompt)
+
+
+class TestIsTransientTpmCollision(unittest.TestCase):
+    """Real incident (2026-07-29/30/31): a 413 naming 'tokens per minute'
+    was treated as permanently fatal, aborting the whole advancement pass
+    on the first rolling-window collision between the new research/eval
+    calls and the main advancement call — instead of backing off and
+    retrying like a 429 already does."""
+
+    def test_tpm_413_is_transient(self):
+        err = ('413 {"error":{"message":"Request too large for model '
+              '`llama-3.3-70b-versatile` ... on tokens per minute (TPM): '
+              'Limit 12000, Requested 12500"}}')
+        self.assertTrue(_is_transient(err))
+
+    def test_unrelated_413_not_treated_as_transient(self):
+        err = '413 {"error":{"message":"Payload too large"}}'
+        self.assertFalse(_is_transient(err))
+
+    def test_429_still_transient(self):
+        self.assertTrue(_is_transient("429 rate limit exceeded"))
 
 
 if __name__ == "__main__":
