@@ -56,6 +56,14 @@ def broken_python_files(files: dict[str, str]) -> list[str]:
 def _is_transient(err: str) -> bool:
     if any(x in err for x in ("404", "403", "401")):
         return False
+    # A 413 naming "tokens per minute" is a rolling-60s-window collision —
+    # e.g. multiple Groq calls (eval harness propose, main call, research
+    # propose/interpret, judge score) landing within the same window — not
+    # a single request permanently too big for the model. A short wait
+    # clears it, same as a 429; real "request too large" 413s from one
+    # oversized payload don't mention TPM and fall through to non-transient.
+    if "413" in err and "tokens per minute" in err.lower():
+        return True
     keywords = ("429", "503", "rate limit", "overloaded", "unavailable", "retry")
     return any(k.lower() in err.lower() for k in keywords)
 

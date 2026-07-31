@@ -16,16 +16,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import advance_repo  # noqa: E402 — imported as a module so call_groq can be patched
-from advance_repo import (commit_summary, research_keywords,  # noqa: E402
-                          sanitize_log)
+from advance_repo import (build_prompt, commit_summary,  # noqa: E402
+                          research_keywords, sanitize_log)
 from eval_harness import (append_score_log, freeze_eval_files,  # noqa: E402
                           is_regression, judge_score, parse_harness_proposal,
                           run_eval)
-from groq_common import broken_python_files, parse_sections  # noqa: E402
+from groq_common import _is_transient, broken_python_files, parse_sections  # noqa: E402
 from registry import pick_due_repo  # noqa: E402
-from research import (extract_result, parse_research_proposal,  # noqa: E402
-                      run_research_stage, sanitize_interpretation)
-from verify import verify_python_repo  # noqa: E402
+from research import (build_propose_prompt, extract_result,  # noqa: E402
+                      parse_research_proposal, run_research_stage,
+                      sanitize_interpretation)
+from verify import _classify_failure, verify_python_repo  # noqa: E402
 
 
 class TestParseSections(unittest.TestCase):
@@ -109,6 +110,21 @@ class TestVerifyPythonRepo(unittest.TestCase):
                "if os.environ.get('GROQ_API_KEY') == 'dummy-key-for-verification':\n"
                "    print('401 Unauthorized', file=sys.stderr); sys.exit(1)\n")
         self.assertTrue(verify_python_repo({"main.py": code})["ok"])
+
+class TestClassifyFailureCliUsage(unittest.TestCase):
+    def test_rich_boxed_missing_command_is_benign(self):
+        # A Typer/Click CLI with >1 @app.command() exits 2 with a rich-styled
+        # box when run with zero args — the last line is just a box border,
+        # not a recognizable "SomeError:" (see 2026-07-29 incident).
+        stderr = (
+            "Usage: main.py [OPTIONS] COMMAND [ARGS]...\n"
+            "╭─ Error ────────────────────────────────────────────\n"
+            "│ Missing command. │\n"
+            "╰────────────────────────────────────────────╯\n"
+        )
+        ok, reason = _classify_failure(stderr)
+        self.assertTrue(ok)
+        self.assertIn("subcommand", reason)
 
 
 class TestVerifyWithRetries(unittest.TestCase):
@@ -257,6 +273,53 @@ class TestAppendScoreLog(unittest.TestCase):
 class TestRunEvalNoScript(unittest.TestCase):
     def test_missing_script_returns_none(self):
         self.assertIsNone(run_eval({"main.py": "print(1)"}))
+
+
+class TestPromptDumpExcludesArtifacts(unittest.TestCase):
+    """Real incident (2026-07-29/30): research/eval artifact files riding
+    along in the advancement prompt's file dump pushed a long-lived repo
+    over Groq's 12,000 TPM limit (413 Request too large)."""
+
+    entry = {"full_name": "x/y", "name": "y", "topic": "t", "advancement_passes": 0}
+
+    def test_research_and_eval_files_excluded_from_dump(self):
+        files = {
+            "main.py": "print('core')",
+            "research/bench_1.py": "print('AUTOSCOUT_RESEARCH_RESULT: {}')",
+            "eval/dataset.json": "[]",
+            "eval/run_eval.py": "print('AUTOSCOUT_EVAL_SCORE: {}')",
+        }
+        prompt = build_prompt(self.entry, files, [])
+        self.assertIn("main.py", prompt)
+        self.assertNotIn("bench_1.py", prompt)
+        self.assertNotIn("run_eval.py", prompt)
+
+    def test_research_propose_prompt_also_excludes_artifacts(self):
+        files = {"main.py": "print('core')", "eval/run_eval.py": "print('x')"}
+        prompt = build_propose_prompt(self.entry, files, "")
+        self.assertIn("main.py", prompt)
+        self.assertNotIn("run_eval.py", prompt)
+
+
+class TestIsTransientTpmCollision(unittest.TestCase):
+    """Real incident (2026-07-29/30/31): a 413 naming 'tokens per minute'
+    was treated as permanently fatal, aborting the whole advancement pass
+    on the first rolling-window collision between the new research/eval
+    calls and the main advancement call — instead of backing off and
+    retrying like a 429 already does."""
+
+    def test_tpm_413_is_transient(self):
+        err = ('413 {"error":{"message":"Request too large for model '
+              '`llama-3.3-70b-versatile` ... on tokens per minute (TPM): '
+              'Limit 12000, Requested 12500"}}')
+        self.assertTrue(_is_transient(err))
+
+    def test_unrelated_413_not_treated_as_transient(self):
+        err = '413 {"error":{"message":"Payload too large"}}'
+        self.assertFalse(_is_transient(err))
+
+    def test_429_still_transient(self):
+        self.assertTrue(_is_transient("429 rate limit exceeded"))
 
 
 if __name__ == "__main__":

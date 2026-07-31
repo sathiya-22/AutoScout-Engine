@@ -72,6 +72,14 @@ MAX_CONTEXT_CHARS = 20_000     # ≈ well under the remaining TPM budget once to
 ADVANCEMENT_LOG = "ADVANCEMENT_LOG.md"
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
 SKIP_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".ico", ".woff", ".woff2", ".lock")
+# research.py's benchmark scripts and eval_harness.py's frozen harness are
+# read separately by those modules directly off the fetched `files` dict —
+# they don't need to also ride along in the advancement prompt's own file
+# dump. A repo that's had many maturation + research + eval cycles can
+# accumulate enough of these to blow past Groq's 12,000 TPM limit on its
+# own (a real incident: 2026-07-29/30, this exact repo, 413 "Request too
+# large") without adding anything the model needs for its actual decision.
+PROMPT_DUMP_EXCLUDE_PREFIXES = ("research/", "eval/")
 USER_AGENT = "AutoScout-Engine (github.com/sathiya-22/AutoScout-Engine)"
 
 
@@ -279,7 +287,8 @@ def build_prompt(entry: dict, files: dict[str, str], research: list[dict]) -> st
                                 "(none yet — this is truly the first advancement "
                                 "pass; do not invent any earlier entries.)")
     dump = "\n\n".join(f"----- FILE: {path} -----\n{content}"
-                       for path, content in files.items())
+                       for path, content in files.items()
+                       if not path.startswith(PROMPT_DUMP_EXCLUDE_PREFIXES))
     research_text = "\n".join(f"- [{s['source']}, score {s['score']}] {s['title']} ({s['url']})"
                               for s in research) or "(no strong external signals found)"
     return ADVANCE_TEMPLATE.format(
